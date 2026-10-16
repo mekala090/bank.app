@@ -2,7 +2,7 @@
 
 A banking app built with Python OOP and Streamlit.
 
-🔗 **Live app:** <paste your streamlit.app link>
+🔗 **Live app:** <https://mekala090-bank-app-ooprevision-xgd4ej.streamlit.app/
 
 ## Features
 - Create customers and open Current or Savings accounts
