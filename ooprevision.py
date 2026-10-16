@@ -14,19 +14,71 @@ st.set_page_config(page_title="OOP Banking Simulator", page_icon="🏦", layout=
 
 
 def get_customers() -> dict[int, Customer]:
-    if "customers" not in st.session_state:
-        st.session_state.customers = {}
-    return st.session_state.customers
+    records = st.session_state.get("customer_data", {})
+    customers = {}
+    for customer_id, record in records.items():
+        customer = Customer(record["name"])
+        customer.customer_id = customer_id
+        for saved_account in record["accounts"]:
+            kind = saved_account["kind"]
+            options = {}
+            if kind == "savings":
+                options = {
+                    "interest_rate": saved_account["interest_rate"],
+                    "min_balance": saved_account["min_balance"],
+                }
+            account = customer.open_account(
+                kind,
+                saved_account["balance"],
+                **options,
+            )
+            account.account_no = saved_account["account_no"]
+            account.transactions = [
+                tuple(transaction)
+                for transaction in saved_account["transactions"]
+            ]
+        customers[customer_id] = customer
+    return customers
 
 
 def save_customers(customers: dict[int, Customer]) -> None:
-    st.session_state.customers = dict(customers)
+    st.session_state["customer_data"] = {
+        customer_id: {
+            "name": customer.name,
+            "accounts": [
+                {
+                    "account_no": account.account_no,
+                    "kind": (
+                        "savings"
+                        if isinstance(account, SavingsAccount)
+                        else "current"
+                    ),
+                    "balance": account.balance,
+                    "interest_rate": (
+                        account.interest_rate
+                        if isinstance(account, SavingsAccount)
+                        else None
+                    ),
+                    "min_balance": (
+                        account.min_balance
+                        if isinstance(account, SavingsAccount)
+                        else None
+                    ),
+                    "transactions": [
+                        list(transaction) for transaction in account.transactions
+                    ],
+                }
+                for account in customer.accounts
+            ],
+        }
+        for customer_id, customer in customers.items()
+    }
 
 
-def get_accounts() -> list[Account]:
+def get_accounts(customers: dict[int, Customer]) -> list[Account]:
     return [
         account
-        for customer in get_customers().values()
+        for customer in customers.values()
         for account in customer.accounts
     ]
 
@@ -34,7 +86,7 @@ def get_accounts() -> list[Account]:
 def account_label(account: Account) -> str:
     return (
         f"#{account.account_no} · {account.owner.name} · "
-        f"INR {account.balance:,.2f}"
+        f"{type(account).__name__.replace('Account', '') or 'Current'}"
     )
 
 
@@ -52,7 +104,7 @@ def account_table(accounts: list[Account]) -> list[dict[str, str]]:
 
 def render_dashboard():
     customers = get_customers()
-    accounts = get_accounts()
+    accounts = get_accounts(customers)
     total_balance = sum(account.balance for account in accounts)
 
     st.subheader("Overview")
@@ -121,10 +173,12 @@ def render_customers_and_accounts():
 
 
 def render_transactions():
-    accounts = get_accounts()
+    customers = get_customers()
+    accounts = get_accounts(customers)
     if not accounts:
         st.info("Open an account before making transactions.")
         return
+    accounts_by_number = {account.account_no: account for account in accounts}
 
     deposit_tab, withdrawal_tab, transfer_tab, interest_tab = st.tabs(
         ["Deposit", "Withdraw", "Transfer", "Savings interest"]
@@ -132,8 +186,10 @@ def render_transactions():
 
     with deposit_tab:
         with st.form("deposit_form", clear_on_submit=True):
-            account = st.selectbox(
-                "Deposit into", accounts, format_func=account_label
+            account_no = st.selectbox(
+                "Deposit into",
+                list(accounts_by_number),
+                format_func=lambda number: account_label(accounts_by_number[number]),
             )
             amount = st.number_input(
                 "Amount (INR)", min_value=0.0, step=100.0, format="%.2f",
@@ -141,17 +197,20 @@ def render_transactions():
             )
             submitted = st.form_submit_button("Deposit", type="primary")
         if submitted:
+            account = accounts_by_number[account_no]
             try:
                 account.deposit(amount)
-                save_customers(get_customers())
+                save_customers(customers)
                 st.success(f"Deposit complete. New balance: INR {account.balance:,.2f}")
             except ValueError as error:
                 st.error(str(error))
 
     with withdrawal_tab:
         with st.form("withdrawal_form", clear_on_submit=True):
-            account = st.selectbox(
-                "Withdraw from", accounts, format_func=account_label
+            account_no = st.selectbox(
+                "Withdraw from",
+                list(accounts_by_number),
+                format_func=lambda number: account_label(accounts_by_number[number]),
             )
             amount = st.number_input(
                 "Amount (INR)", min_value=0.0, step=100.0, format="%.2f",
@@ -159,9 +218,10 @@ def render_transactions():
             )
             submitted = st.form_submit_button("Withdraw", type="primary")
         if submitted:
+            account = accounts_by_number[account_no]
             try:
                 account.withdraw(amount)
-                save_customers(get_customers())
+                save_customers(customers)
                 st.success(
                     f"Withdrawal complete. New balance: INR {account.balance:,.2f}"
                 )
@@ -170,13 +230,19 @@ def render_transactions():
 
     with transfer_tab:
         with st.form("transfer_form", clear_on_submit=True):
-            source = st.selectbox(
-                "From account", accounts, format_func=account_label
+            source_no = st.selectbox(
+                "From account",
+                list(accounts_by_number),
+                format_func=lambda number: account_label(accounts_by_number[number]),
             )
-            destinations = [account for account in accounts if account is not source]
-            if destinations:
-                target = st.selectbox(
-                    "To account", destinations, format_func=account_label
+            destination_numbers = [
+                number for number in accounts_by_number if number != source_no
+            ]
+            if destination_numbers:
+                target_no = st.selectbox(
+                    "To account",
+                    destination_numbers,
+                    format_func=lambda number: account_label(accounts_by_number[number]),
                 )
                 amount = st.number_input(
                     "Amount (INR)", min_value=0.0, step=100.0, format="%.2f",
@@ -186,12 +252,14 @@ def render_transactions():
             else:
                 st.info("A transfer requires at least two accounts.")
                 submitted = False
-                target = None
+                target_no = None
                 amount = 0.0
-        if submitted and target is not None:
+        if submitted and target_no is not None:
+            source = accounts_by_number[source_no]
+            target = accounts_by_number[target_no]
             try:
                 source.transfer(target, amount)
-                save_customers(get_customers())
+                save_customers(customers)
                 st.success(
                     f"Transferred INR {amount:,.2f}. "
                     f"Source balance: INR {source.balance:,.2f}; "
@@ -201,34 +269,43 @@ def render_transactions():
                 st.error(str(error))
 
     with interest_tab:
-        savings_accounts = [
-            account for account in accounts if isinstance(account, SavingsAccount)
+        savings_account_numbers = [
+            number
+            for number, account in accounts_by_number.items()
+            if isinstance(account, SavingsAccount)
         ]
-        if not savings_accounts:
+        if not savings_account_numbers:
             st.info("Open a savings account before adding interest.")
         else:
             with st.form("interest_form"):
-                account = st.selectbox(
+                account_no = st.selectbox(
                     "Savings account",
-                    savings_accounts,
-                    format_func=account_label,
+                    savings_account_numbers,
+                    format_func=lambda number: account_label(accounts_by_number[number]),
                 )
                 submitted = st.form_submit_button("Add monthly interest")
             if submitted:
+                account = accounts_by_number[account_no]
                 balance = account.add_interest()
-                save_customers(get_customers())
+                save_customers(customers)
                 st.success(f"Interest applied. New balance: INR {balance:,.2f}")
 
 
 def render_statements():
-    accounts = get_accounts()
+    customers = get_customers()
+    accounts = get_accounts(customers)
     if not accounts:
         st.info("Open an account to view its transaction statement.")
         return
 
-    account = st.selectbox(
-        "Select account", accounts, format_func=account_label, key="statement_account"
+    accounts_by_number = {account.account_no: account for account in accounts}
+    account_no = st.selectbox(
+        "Select account",
+        list(accounts_by_number),
+        format_func=lambda number: account_label(accounts_by_number[number]),
+        key="statement_account",
     )
+    account = accounts_by_number[account_no]
     transactions = [
         {
             "Date and time": timestamp,
